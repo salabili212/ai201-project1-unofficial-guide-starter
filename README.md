@@ -1,5 +1,27 @@
 # The Unofficial Guide — CSI CS Professor Reviews (RAG)
 
+## Running this yourself
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate            # Windows;  source .venv/bin/activate on macOS/Linux
+pip install -r requirements.txt
+
+copy .env.example .env            # cp .env.example .env on macOS/Linux
+
+python evaluate.py                # runs the 5 evaluation questions end to end
+python app.py                     # Gradio interface at http://localhost:7860
+```
+
+**An API key is optional.** `.env.example` ships with `GROQ_API_KEY=` left blank
+and `.env` is gitignored, so no key is ever committed to this repository. If you
+add your own Groq key the system generates answers with
+`llama-3.3-70b-versatile`; if you leave it blank it falls back to a small local
+model (`Qwen/Qwen2.5-0.5B-Instruct`) that runs on CPU with no account and no
+network after the initial download. Retrieval, grounding, and source attribution
+are identical either way — only the fluency of the prose differs. See
+`generator.py` and the Embedding Model section below.
+
 ## Domain and Sources
 
 My domain is student reviews of Computer Science professors at the College of

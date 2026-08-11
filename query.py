@@ -1,38 +1,67 @@
-"""Query pipeline: retrieve chunks + generate grounded answer via Groq."""
-import os
+"""Query pipeline: retrieve chunks + generate a grounded answer.
+
+Generation runs through generator.py, which uses the Groq API when a key is
+configured and a small local model otherwise. Both backends get the same
+prompt and the same retrieved context.
+"""
 from dotenv import load_dotenv
-from groq import Groq
-from embed import build_store, retrieve
+
+from embed import retrieve
+from generator import generate
 
 load_dotenv()
-client_groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-SYSTEM_PROMPT = """You are a helpful assistant that answers questions about 
-Computer Science professors at the College of Staten Island, based ONLY on 
-student reviews provided below. 
+# Cosine distances above this are treated as "nothing relevant was found".
+# Chosen from observed runs: on-topic chunks land at 0.48-0.85, while the
+# out-of-scope parking query returned its best match at 1.404. Anything past
+# ~1.1 is a chunk that shares vocabulary with the query but not subject matter.
+RELEVANCE_THRESHOLD = 1.1
 
-Rules:
-1. Answer ONLY from the provided reviews. Do NOT use outside knowledge.
-2. Cite which professor and source file each piece of information comes from.
-3. If the reviews do not contain enough information to answer, say exactly: 
-   "I don't have enough information to answer that based on the available reviews."
-4. Represent the range of student opinions — don't cherry-pick only positive or negative.
-"""
+REFUSAL = (
+    "I don't have enough information to answer that based on the available reviews."
+)
+
 
 def ask(question, collection, model):
-    """Retrieve relevant chunks and generate a grounded answer."""
+    """Retrieve relevant chunks and generate a grounded answer.
+
+    Returns a dict with:
+        answer   — the generated response, or the refusal string
+        sources  — source filenames of the chunks actually used
+        backend  — which generation backend produced the answer
+        distances — distance score of each retrieved chunk, for transparency
+    """
     results = retrieve(question, collection, model)
     docs = results["documents"][0]
     metas = results["metadatas"][0]
-    
-    # build context from retrieved chunks
+    dists = results["distances"][0]
+
+    # Keep only chunks close enough to plausibly be about the question. This
+    # makes refusal a property of the pipeline rather than something we hope
+    # the language model chooses to do. It also stops a thinly-covered
+    # professor's answer from being padded with reviews of other professors
+    # just because top-k is a fixed number.
+    kept = [
+        (doc, meta, dist)
+        for doc, meta, dist in zip(docs, metas, dists)
+        if dist <= RELEVANCE_THRESHOLD
+    ]
+
+    if not kept:
+        return {
+            "answer": REFUSAL,
+            "sources": [],
+            "backend": "none (no chunk within relevance threshold)",
+            "distances": [round(d, 3) for d in dists],
+        }
+
     context = ""
     sources = []
-    for i, (doc, meta) in enumerate(zip(docs, metas)):
-        context += f"\n[Review {i+1}] (from {meta['source']}): {doc}\n"
+    for i, (doc, meta, dist) in enumerate(kept, start=1):
+        context += f"\n[Review {i}] (from {meta['source']}): {doc}\n"
         if meta["source"] not in sources:
             sources.append(meta["source"])
-    
+
     user_prompt = f"""Based on the following student reviews, answer this question:
 
 Question: {question}
@@ -42,15 +71,11 @@ Reviews:
 
 Remember: answer ONLY from these reviews. Cite sources."""
 
-    response = client_groq.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.3,
-        max_tokens=1024,
-    )
-    
-    answer = response.choices[0].message.content
-    return {"answer": answer, "sources": sources}
+    answer, backend = generate(user_prompt)
+
+    return {
+        "answer": answer,
+        "sources": sources,
+        "backend": backend,
+        "distances": [round(dist, 3) for _, _, dist in kept],
+    }

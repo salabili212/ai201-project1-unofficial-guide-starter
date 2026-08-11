@@ -60,7 +60,9 @@ def main():
                 result = ask(question, collection, model)
                 f.write("**Generated answer:**\n\n")
                 f.write("```\n" + result["answer"].strip() + "\n```\n\n")
-                f.write(f"**Sources returned:** {', '.join(result['sources'])}\n\n")
+                f.write(f"**Sources returned:** {', '.join(result['sources']) or '(none)'}\n\n")
+                f.write(f"**Backend:** {result['backend']}\n\n")
+                f.write(f"**Chunks kept after threshold:** {result['distances']}\n\n")
             except Exception:
                 f.write("**ERROR:**\n\n```\n" + traceback.format_exc() + "\n```\n\n")
                 print("  ERROR - see eval_output.md")
@@ -75,7 +77,8 @@ def main():
                 result = ask(question, collection, model)
                 f.write("**Generated answer:**\n\n")
                 f.write("```\n" + result["answer"].strip() + "\n```\n\n")
-                f.write(f"**Sources returned:** {', '.join(result['sources'])}\n\n")
+                f.write(f"**Sources returned:** {', '.join(result['sources']) or '(none)'}\n\n")
+                f.write(f"**Backend:** {result['backend']}\n\n")
             except Exception:
                 f.write("**ERROR:**\n\n```\n" + traceback.format_exc() + "\n```\n\n")
                 print("  ERROR - see eval_output.md")
