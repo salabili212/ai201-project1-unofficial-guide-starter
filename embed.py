@@ -15,11 +15,12 @@ def build_store():
     model = SentenceTransformer(EMBED_MODEL)
     embeddings = model.encode(chunks, show_progress_bar=True).tolist()
     client = chromadb.Client()
-    # delete collection if it already exists
-    try:
+    # Drop the collection if a previous run left one behind. Catch only the
+    # "not found" case — a bare `except: pass` here would also swallow real
+    # errors (a corrupt store, a permissions problem) and leave you debugging
+    # empty retrieval results instead of the actual failure.
+    if COLLECTION_NAME in [c.name for c in client.list_collections()]:
         client.delete_collection(COLLECTION_NAME)
-    except:
-        pass
     collection = client.create_collection(COLLECTION_NAME)
     ids = [f"chunk_{i}" for i in range(len(chunks))]
     collection.add(

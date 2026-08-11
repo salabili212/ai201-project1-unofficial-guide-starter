@@ -19,7 +19,7 @@ professors. I copied the written review text from each professor's page into a
 |---|--------|-------------|
 | 1 | rmp_zelikovitz.txt | Sarah Zelikovitz reviews |
 | 2 | rmp_zhang_shuqun.txt | Shuqun Zhang reviews |
-| 3 | rmp_rao.txt | Jun Rao reviews |
+| 3 | rmp_cappellari.txt | Paolo Cappellari reviews |
 | 4 | rmp_mohamed.txt | Ali Mohamed reviews |
 | 5 | rmp_chen.txt | Cong Chen reviews |
 | 6 | rmp_zhang_xiaowen.txt | Xiaowen (Sean) Zhang reviews |
@@ -85,7 +85,44 @@ while a local model is free and private.
 
 ## How Grounding Is Enforced
 
-<!-- TODO: fill after running app.py — describe the system prompt and source attribution -->
+Grounding is enforced in two places — the prompt, and the pipeline structure
+around it. The prompt alone isn't enough, because an instruction is something a
+model can drift from.
+
+**1. The context window contains nothing but retrieved chunks.** `ask()` in
+`query.py` builds the context string by iterating over the top-5 chunks returned
+by ChromaDB and nothing else. The model is never handed the full corpus, a
+summary, or any text it didn't retrieve. If a fact isn't in those five chunks, it
+isn't in the prompt.
+
+**2. The system prompt states the constraint as a rule, not a preference.**
+`SYSTEM_PROMPT` tells the model to answer **only** from the provided reviews, to
+cite which professor and source file each claim comes from, and — the important
+one — gives it an exact refusal string to use when the reviews don't cover the
+question: *"I don't have enough information to answer that based on the available
+reviews."* Specifying the exact sentence matters. "Say you don't know" invites the
+model to hedge into a plausible-sounding general answer; a fixed string gives it a
+concrete action to take instead of guessing.
+
+There's a fourth rule that isn't about grounding but is about honesty: the model
+is told to represent the range of student opinion rather than cherry-picking. On a
+corpus of Rate My Professors reviews, where a professor can have five glowing
+reviews and one scathing one, summarizing only the majority view would be
+technically grounded and still misleading.
+
+**3. Source attribution is computed, not generated.** `ask()` collects source
+filenames from each retrieved chunk's ChromaDB metadata and returns them as a
+separate `sources` list, which `app.py` renders in its own "Sources used" box.
+The model is asked to cite inline as well, but the box is not the model's output —
+it's derived from retrieval metadata. Even if the model cited nothing, or cited a
+file that wasn't retrieved, the interface would still show the true provenance of
+the context it was given. Attribution can't be hallucinated because the model
+isn't the one producing it.
+
+The remaining weakness, which I'd want to close before calling this
+production-ready: nothing verifies that a specific *sentence* in the answer traces
+to a specific retrieved chunk. Grounding is enforced at the level of "the model
+only saw these five chunks," not "this claim came from chunk 3."
 
 ## Example Responses
 
@@ -102,21 +139,142 @@ The interface is a Gradio web app (app.py) with two input/output areas:
 
 ## Evaluation Report
 
+Retrieval for all five questions was captured by `evaluate.py`, which writes the
+full top-5 chunk list with distance scores to `eval_output.md`. Sources retrieved
+per question:
+
+| # | Sources retrieved (top-5, with distances) | Retrieval verdict |
+|---|---|---|
+| 1 | `zhang_shuqun` ×4 (0.559, 0.619, 0.647, 0.723), `zhang_xiaowen` ×1 (0.701) | Accurate — 4 of 5 from the right professor |
+| 2 | `alnajjar` ×4 (0.611, 0.807, 0.933, 1.055), `chen` ×1 (1.054) | Accurate — the skeptical review is retrieved alongside the positive ones |
+| 3 | `zhang_shuqun` ×3 (0.745, 0.754, 0.830), `zhang_xiaowen` ×2 (0.807, 0.807) | Partially accurate — surname collision pulls in the wrong Zhang |
+| 4 | `cappellari` ×2 (0.684, 0.843), `mohamed` ×2 (1.012, 1.033), `petingi` ×1 (1.105) | Partially accurate — both relevant chunks found, then padded with noise |
+| 5 | `mohamed` ×3, `zelikovitz` ×1, `alnajjar` ×1 — all at distance 1.40–1.50 | Correctly finds nothing relevant; distances flag it clearly |
+
 | # | Question | Expected Answer | System Response | Accuracy |
 |---|----------|-----------------|-----------------|----------|
 | 1 | Does Professor Shuqun Zhang help students during labs? | Yes — multiple reviews say he helps during lab sessions and stays after class. | <!-- TODO --> | <!-- TODO --> |
 | 2 | Do students think Professor Fuad Alnajjar's positive reviews are trustworthy? | Mixed — most are positive, but one claims the positive reviews were written by the professor himself. | <!-- TODO --> | <!-- TODO --> |
 | 3 | Does Professor Shuqun Zhang give practice exams? | Yes — a review says he does reviews before all exams and gives practice exams. | <!-- TODO --> | <!-- TODO --> |
-| 4 | <!-- TODO: your question from rmp_rao.txt --> | <!-- TODO --> | <!-- TODO --> | <!-- TODO --> |
+| 4 | What do students say about Professor Paolo Cappellari's homework load and flexibility? | Split — one review calls him clear and straightforward but notes a lot of homework plus a group project (waivers given at the end); the other calls him inflexible, closing submission links the moment work is late regardless of technical difficulties. | <!-- TODO --> | <!-- TODO --> |
 | 5 | Where can I park near the CS building at CSI? | System should say it doesn't have enough information. | <!-- TODO --> | <!-- TODO --> |
 
 ## Failure Case
 
-<!-- TODO: after running all 5 eval questions, describe one failure with a specific pipeline-level explanation -->
+### Primary failure: two professors share a surname, and retrieval merges them
+
+**The query:** "Is Professor Zhang a good teacher?"
+
+I predicted this one in `planning.md` under Anticipated Challenges, and running it
+confirmed it. My corpus contains two different professors named Zhang — Shuqun
+Zhang and Xiaowen (Sean) Zhang. Retrieval returns a blend of both:
+
+| Rank | Source | Distance |
+|---|---|---|
+| 1 | `rmp_zhang_xiaowen.txt` | 0.511 |
+| 2 | `rmp_zhang_shuqun.txt` | 0.521 |
+| 3 | `rmp_zhang_xiaowen.txt` | 0.595 |
+| 4 | `rmp_zhang_xiaowen.txt` | 0.678 |
+| 5 | `rmp_zhang_shuqun.txt` | 0.685 |
+
+Three chunks about one professor, two about another, and the retrieved text is
+flatly contradictory: chunk 1 says *"Excellent professor who was always very
+helpful during and after class,"* while chunk 3 says *"Could not teach clearly if
+his life depended on it... Most of the class dropped out, do not take him."* Both
+statements are true — of different people.
+
+**Why it happens, specifically:** it's a chunking decision, not a retrieval bug.
+My chunker prepends the professor's full name to every chunk so each one is
+self-describing (`ingest.py`, `make_chunks()`). That works well when a query names
+a professor uniquely — it's why the Cappellari and Mohamed queries retrieve
+cleanly. But the embedding is a single dense vector over the whole chunk, and
+"Professor Shuqun Zhang" and "Professor Xiaowen (Sean) Zhang" are lexically and
+semantically near-identical strings. The surname dominates the name portion of the
+embedding and the disambiguating first name contributes very little to overall
+similarity. The distances confirm it: ranks 1 and 2 are 0.010 apart across two
+*different* professors. The embedding has no way to express "these are different
+people" because nothing in my pipeline ever told it they were — I encoded
+identity as free text inside the chunk rather than as structured metadata.
+
+The downstream consequence is the part that matters. Retrieval returning a mix
+isn't itself wrong — the query genuinely is ambiguous. The failure is that the
+generation stage has no way to *notice* the mix. All five chunks arrive as
+undifferentiated context, so the model will synthesize one answer about "Professor
+Zhang" that averages two people into a single incoherent verdict, and it will be
+correctly sourced while being wrong.
+
+**The fix I'd make:** the professor name is already known at ingestion time — it's
+the `NAMES` lookup — but it's only written into the chunk text, not into the
+metadata dict, which currently holds just `source` and `position`. Adding
+`professor` as a metadata field would let me either filter by professor when a
+query names one unambiguously, or detect at query time that retrieved chunks span
+more than one professor and have the interface ask which Zhang the user meant
+rather than guessing. That's a metadata-filtering change, which is also one of the
+listed stretch features — I ran out of time before implementing it, but this
+failure is the concrete argument for why it's worth doing.
+
+### Secondary observation: fixed top-k pads thin coverage with noise
+
+The Cappellari query surfaced a second, milder version of the same class of
+problem. Cappellari has only two reviews in my corpus. Retrieval returns both
+correctly at ranks 1 and 2 (distances 0.684 and 0.843) — and then, because `k` is
+hardcoded to 5, fills the remaining three slots with reviews about Ali Mohamed and
+Louis Petingi at distances 1.012, 1.033, and 1.105.
+
+Those three chunks are on-topic in the abstract — they're all about homework load
+and deadline flexibility, which is what I asked about — but they're about the
+wrong professor. This is the "uneven coverage" risk from `planning.md` showing up
+with numbers attached. A distance threshold (drop anything above ~1.0) alongside
+top-k would return two chunks here instead of five, and the answer would be built
+only from material that's actually about Cappellari.
+
+The same gap shows in the out-of-scope parking query: every retrieved chunk sits
+at distance 1.40–1.50, unmistakably irrelevant, yet the pipeline still forwards all
+five to the LLM and relies entirely on the prompt's refusal instruction to catch
+it. Retrieval already *knows* nothing matched. It just has no way to say so.
 
 ## Spec Reflection
 
-<!-- TODO: one way the spec helped, one way implementation diverged -->
+**Where the spec helped:** writing the chunking strategy before any code forced me
+to look at what my documents actually were, and they turned out to be lists of
+short independent reviews rather than continuous prose. That one observation
+decided two things at once. It ruled out fixed-character chunking, because a
+500-character window would cut a review in half and leave a fragment like
+"Professor Smith's exams are heavily" with no standalone meaning. And it ruled out
+overlap entirely — overlap exists to keep a fact from being split across a
+boundary, but if the boundary is a review boundary, there's no fact spanning it.
+Overlap here would just have duplicated whole reviews into neighboring chunks and
+made the same opinion match a query several times. Having written that down first,
+the implementation was a short function rather than a round of guessing, and I
+never had to tune a chunk size.
+
+**Where the implementation diverged:** the spec said the professor's name would be
+prepended to each chunk "from each file's header line." When I actually processed
+the documents, the header lines were inconsistent — some files had them, some
+didn't, and the ones that did weren't formatted the same way. Parsing them would
+have meant a fragile rule that silently mislabeled chunks whenever a file didn't
+match the expected shape, and a mislabeled chunk is worse than a missing one,
+because it attributes a real review to the wrong professor. So I moved the mapping
+out of the document content and into an explicit `NAMES` dictionary in `ingest.py`
+keyed by filename, and made an unmapped file print a warning and skip rather than
+guess. The chunking *strategy* was unchanged — one review per chunk, name
+prepended, no overlap — but the source of the name moved from "parsed from data"
+to "declared in code."
+
+That tradeoff is worth naming, because it isn't free: `NAMES` is a hardcoded map
+that has to be updated by hand every time a document is added, which doesn't scale
+past a corpus this size. What it buys is that the failure mode is loud. A missing
+entry prints `WARNING: <file> not in NAMES map — skipped` instead of quietly
+attributing reviews to the wrong person. At eleven documents that's the right
+trade; at a few hundred I'd need a real parsing strategy with validation, not a
+dictionary.
+
+Worth noting for anyone extending this: `NAMES` currently has eleven entries but
+`documents/` has ten files. The extra entry (`rmp_rao.txt`) is a professor I
+planned to include and didn't end up collecting. It's harmless — the map is only
+read by filename lookup, so an unused key does nothing — but it's exactly the kind
+of drift between spec and data that the warning above is designed to catch in the
+other direction.
 
 ## AI Usage
 

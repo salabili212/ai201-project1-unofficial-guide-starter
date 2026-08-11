@@ -77,7 +77,7 @@ cost and per-query latency, while a local model is free and private.
 | 1 | Does Professor Shuqun Zhang help students during labs? | Yes — multiple reviews say he helps during lab sessions and stays after class to help students finish. |
 | 2 | Do students think Professor Fuad Alnajjar's positive reviews are trustworthy? | Mixed — most reviews are very positive (clear explanations, real-world examples, fair grading), but one review claims the positive reviews were written by the professor himself. |
 | 3 | Does Professor Shuqun Zhang give practice exams? | Yes — a review says he does reviews before all exams and gives practice exams. |
-| 4 | ❗YOUR QUESTION from rmp_rao.txt | ❗What the reviews actually say |
+| 4 | What do students say about Professor Paolo Cappellari's homework load and flexibility? | Split — one review calls him clear and straightforward but says he assigns a lot of homework plus a group project (with waivers at the end); the other calls him inflexible, closing submission links the moment work is late regardless of technical difficulties. Only two reviews exist for him, so this also tests the uneven-coverage risk below. |
 | 5 | Where can I park near the CS building at CSI? | The system should say it doesn't have enough information — parking is not covered in any document. |
 
 ---
